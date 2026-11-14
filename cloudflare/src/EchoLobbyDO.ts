@@ -143,20 +143,22 @@ export class EchoLobbyDO extends DurableObject<Env> {
   private async getFriendStatuses(playerId: string, friendIds: string[]): Promise<FriendEntry[]> {
     const uniqueIds = Array.from(new Set(friendIds)).filter((id) => id && id !== playerId);
 
-    // Also load persisted friendships from D1
-    try {
-      const rows = await this.env.DB.prepare(
-        'SELECT friend_id FROM friendships WHERE player_id = ? LIMIT 100'
-      )
-        .bind(playerId)
-        .all<{ friend_id: string }>();
-      for (const row of rows.results || []) {
-        if (row.friend_id && row.friend_id !== playerId && !uniqueIds.includes(row.friend_id)) {
-          uniqueIds.push(row.friend_id);
+    // Also load persisted friendships from D1 when available
+    if (this.env.DB) {
+      try {
+        const rows = await this.env.DB.prepare(
+          'SELECT friend_id FROM friendships WHERE player_id = ? LIMIT 100'
+        )
+          .bind(playerId)
+          .all<{ friend_id: string }>();
+        for (const row of rows.results || []) {
+          if (row.friend_id && row.friend_id !== playerId && !uniqueIds.includes(row.friend_id)) {
+            uniqueIds.push(row.friend_id);
+          }
         }
+      } catch {
+        // D1 may not be initialized yet in fresh setups; fall back cleanly to live presence
       }
-    } catch {
-      // D1 may not be initialized yet in fresh setups; fall back cleanly to live presence
     }
 
     const offlineLookup: string[] = [];
@@ -176,25 +178,27 @@ export class EchoLobbyDO extends DurableObject<Env> {
         string,
         { username: string; character_class: string; aura_color: string; last_realm: string; updated_at: number }
       >();
-      try {
-        const placeholders = offlineLookup.map(() => '?').join(',');
-        const dbRows = await this.env.DB.prepare(
-          `SELECT id, username, character_class, aura_color, last_realm, updated_at FROM players WHERE id IN (${placeholders})`
-        )
-          .bind(...offlineLookup)
-          .all<{
-            id: string;
-            username: string;
-            character_class: string;
-            aura_color: string;
-            last_realm: string;
-            updated_at: number;
-          }>();
-        for (const row of dbRows.results || []) {
-          offlineProfiles.set(row.id, row);
+      if (this.env.DB) {
+        try {
+          const placeholders = offlineLookup.map(() => '?').join(',');
+          const dbRows = await this.env.DB.prepare(
+            `SELECT id, username, character_class, aura_color, last_realm, updated_at FROM players WHERE id IN (${placeholders})`
+          )
+            .bind(...offlineLookup)
+            .all<{
+              id: string;
+              username: string;
+              character_class: string;
+              aura_color: string;
+              last_realm: string;
+              updated_at: number;
+            }>();
+          for (const row of dbRows.results || []) {
+            offlineProfiles.set(row.id, row);
+          }
+        } catch {
+          // Ignore if DB unavailable
         }
-      } catch {
-        // Ignore if DB unavailable
       }
 
       for (const fid of offlineLookup) {
@@ -395,7 +399,7 @@ export class EchoLobbyDO extends DurableObject<Env> {
           ? this.buildFriendEntryFromPresence(targetOnline)
           : null;
 
-        if (!targetId) {
+        if (!targetId && this.env.DB) {
           // Search Cloudflare D1 players table by id or username
           try {
             const dbRow = await this.env.DB.prepare(
@@ -452,21 +456,23 @@ export class EchoLobbyDO extends DurableObject<Env> {
         }
 
         const now = Date.now();
-        try {
-          await this.env.DB.prepare(
-            'INSERT OR IGNORE INTO friendships (player_id, friend_id, created_at) VALUES (?, ?, ?)'
-          )
-            .bind(playerId, targetId, now)
-            .run();
-          if (targetOnline) {
+        if (this.env.DB) {
+          try {
             await this.env.DB.prepare(
               'INSERT OR IGNORE INTO friendships (player_id, friend_id, created_at) VALUES (?, ?, ?)'
             )
-              .bind(targetId, playerId, now)
+              .bind(playerId, targetId, now)
               .run();
+            if (targetOnline) {
+              await this.env.DB.prepare(
+                'INSERT OR IGNORE INTO friendships (player_id, friend_id, created_at) VALUES (?, ?, ?)'
+              )
+                .bind(targetId, playerId, now)
+                .run();
+            }
+          } catch {
+            // ignore if DB not yet initialized
           }
-        } catch {
-          // ignore if DB not yet initialized
         }
 
         if (targetOnline && requester) {
@@ -499,12 +505,14 @@ export class EchoLobbyDO extends DurableObject<Env> {
         if (requester) {
           requester.friendIds = requester.friendIds.filter((id) => id !== targetId);
         }
-        try {
-          await this.env.DB.prepare('DELETE FROM friendships WHERE player_id = ? AND friend_id = ?')
-            .bind(playerId, targetId)
-            .run();
-        } catch {
-          // ignore
+        if (this.env.DB) {
+          try {
+            await this.env.DB.prepare('DELETE FROM friendships WHERE player_id = ? AND friend_id = ?')
+              .bind(playerId, targetId)
+              .run();
+          } catch {
+            // ignore
+          }
         }
         const friends = await this.getFriendStatuses(playerId, requester?.friendIds || []);
         return Response.json({ ok: true, friends });
@@ -858,6 +866,51 @@ export class EchoLobbyDO extends DurableObject<Env> {
         if (!party) return Response.json({ ok: true, count: 0 });
         await this.broadcastToParty(party, body.packet, initiatorId);
         return Response.json({ ok: true, count: party.members.length });
+      }
+
+      case '/internal/player-save-meta': {
+        const playerId = String(body.playerId || '').trim().slice(0, 80);
+        if (!playerId) return Response.json({ updatedAt: 0 });
+        const stored = await this.ctx.storage.get<{ updatedAt?: number }>(`player_save:${playerId}`);
+        return Response.json({ updatedAt: stored?.updatedAt || 0 });
+      }
+
+      case '/internal/player-save-get': {
+        const playerId = String(body.playerId || '').trim().slice(0, 80);
+        if (!playerId) {
+          return Response.json({ ok: true, save: null, darkProgress: null, updatedAt: 0 });
+        }
+        const stored = await this.ctx.storage.get<{
+          save?: unknown;
+          darkProgress?: unknown;
+          updatedAt?: number;
+        }>(`player_save:${playerId}`);
+        if (!stored) {
+          return Response.json({ ok: true, save: null, darkProgress: null, updatedAt: 0 });
+        }
+        return Response.json({
+          ok: true,
+          save: stored.save ?? null,
+          darkProgress: stored.darkProgress ?? null,
+          updatedAt: stored.updatedAt || 0,
+        });
+      }
+
+      case '/internal/player-save-put': {
+        const playerId = String(body.playerId || '').trim().slice(0, 80);
+        if (!playerId) return Response.json({ ok: false, error: 'Missing playerId' }, { status: 400 });
+        const existing = await this.ctx.storage.get<{
+          save?: unknown;
+          darkProgress?: unknown;
+          updatedAt?: number;
+        }>(`player_save:${playerId}`);
+        const now = Date.now();
+        await this.ctx.storage.put(`player_save:${playerId}`, {
+          save: body.save ?? {},
+          darkProgress: body.darkProgress !== undefined ? body.darkProgress : existing?.darkProgress ?? null,
+          updatedAt: now,
+        });
+        return Response.json({ ok: true, updatedAt: now });
       }
 
       default:

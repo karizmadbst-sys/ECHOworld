@@ -144,7 +144,7 @@ export class EchoRoomDO extends DurableObject<Env> {
       const savedSnap = await this.ctx.storage.get<RoomSnapshotInternal>('snapshot');
       if (savedSnap) {
         this.loadFromSnapshotInternal(savedSnap);
-      } else if (this.meta.roomId) {
+      } else if (this.meta.roomId && this.env.DB) {
         // Fallback: hydrate from D1 if DO storage was empty (e.g. cold boot or recreated room)
         try {
           const row = await this.env.DB.prepare(
@@ -315,32 +315,34 @@ export class EchoRoomDO extends DurableObject<Env> {
       if (forceD1 || now - this.lastD1PersistAt > 4000) {
         this.lastD1PersistAt = now;
         this.persistDirty = false;
-        try {
-          await this.env.DB.prepare(
-            `INSERT INTO rooms (room_id, name, host_player_id, is_private, passcode_hash, snapshot_json, player_count, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(room_id) DO UPDATE SET
-               name = excluded.name,
-               is_private = excluded.is_private,
-               passcode_hash = COALESCE(excluded.passcode_hash, rooms.passcode_hash),
-               snapshot_json = excluded.snapshot_json,
-               player_count = excluded.player_count,
-               updated_at = excluded.updated_at`
-          )
-            .bind(
-              metaCopy.roomId,
-              metaCopy.name,
-              metaCopy.hostPlayerId,
-              metaCopy.isPrivate ? 1 : 0,
-              metaCopy.passcodeHash,
-              JSON.stringify(snap),
-              playerCount,
-              metaCopy.createdAt,
-              now
+        if (this.env.DB) {
+          try {
+            await this.env.DB.prepare(
+              `INSERT INTO rooms (room_id, name, host_player_id, is_private, passcode_hash, snapshot_json, player_count, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(room_id) DO UPDATE SET
+                 name = excluded.name,
+                 is_private = excluded.is_private,
+                 passcode_hash = COALESCE(excluded.passcode_hash, rooms.passcode_hash),
+                 snapshot_json = excluded.snapshot_json,
+                 player_count = excluded.player_count,
+                 updated_at = excluded.updated_at`
             )
-            .run();
-        } catch {
-          // Ignore D1 errors when uninitialized
+              .bind(
+                metaCopy.roomId,
+                metaCopy.name,
+                metaCopy.hostPlayerId,
+                metaCopy.isPrivate ? 1 : 0,
+                metaCopy.passcodeHash,
+                JSON.stringify(snap),
+                playerCount,
+                metaCopy.createdAt,
+                now
+              )
+              .run();
+          } catch {
+            // Ignore D1 errors when uninitialized
+          }
         }
       }
     };
@@ -620,9 +622,10 @@ export class EchoRoomDO extends DurableObject<Env> {
         return;
       }
 
-      // If client supplied a signed session token, verify ownership of profile.id
-      if (typeof packet.token === 'string' && packet.token.trim()) {
-        const tokenPayload = await verifySessionToken(this.env, packet.token.trim());
+      // Verify signed session token from C_AUTH packet (or already-verified WebSocket ?token= query param)
+      const packetToken = typeof packet.token === 'string' ? packet.token.trim() : '';
+      if (packetToken) {
+        const tokenPayload = await verifySessionToken(this.env, packetToken);
         if (!tokenPayload || tokenPayload.pid !== profile.id) {
           this.sendPacket(ws, {
             type: 'S_AUTH_ACK',
@@ -632,12 +635,12 @@ export class EchoRoomDO extends DurableObject<Env> {
           });
           return;
         }
-      } else if (att.playerId && att.playerId !== 'pending' && att.playerId !== profile.id) {
+      } else if (!att.playerId || att.playerId === 'pending' || att.playerId !== profile.id) {
         this.sendPacket(ws, {
           type: 'S_AUTH_ACK',
           success: false,
           sessionPlayerId: '',
-          error: 'Token mismatch for player session',
+          error: 'Invalid or expired session token. Authenticate via POST /api/auth/session first.',
         });
         return;
       }
@@ -679,41 +682,43 @@ export class EchoRoomDO extends DurableObject<Env> {
         authenticated: true,
       };
 
-      // Upsert player into D1 non-blockingly
-      this.ctx.waitUntil(
-        this.env.DB.prepare(
-          `INSERT INTO players (id, username, title_ar, title_en, character_class, robe_color, aura_color, level, echo_mastery, last_room_id, last_realm, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             username = excluded.username,
-             title_ar = excluded.title_ar,
-             title_en = excluded.title_en,
-             character_class = excluded.character_class,
-             robe_color = excluded.robe_color,
-             aura_color = excluded.aura_color,
-             level = excluded.level,
-             echo_mastery = excluded.echo_mastery,
-             last_room_id = excluded.last_room_id,
-             updated_at = excluded.updated_at`
-        )
-          .bind(
-            cleanProfile.id,
-            cleanProfile.username,
-            cleanProfile.titleAr,
-            cleanProfile.titleEn,
-            cleanProfile.characterClass,
-            cleanProfile.robeColor,
-            cleanProfile.auraColor,
-            cleanProfile.level,
-            cleanProfile.echoMastery,
-            this.meta.roomId,
-            att.transform.realm,
-            cleanProfile.createdAt,
-            now
+      // Upsert player into D1 non-blockingly when bound
+      if (this.env.DB) {
+        this.ctx.waitUntil(
+          this.env.DB.prepare(
+            `INSERT INTO players (id, username, title_ar, title_en, character_class, robe_color, aura_color, level, echo_mastery, last_room_id, last_realm, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               username = excluded.username,
+               title_ar = excluded.title_ar,
+               title_en = excluded.title_en,
+               character_class = excluded.character_class,
+               robe_color = excluded.robe_color,
+               aura_color = excluded.aura_color,
+               level = excluded.level,
+               echo_mastery = excluded.echo_mastery,
+               last_room_id = excluded.last_room_id,
+               updated_at = excluded.updated_at`
           )
-          .run()
-          .catch(() => {})
-      );
+            .bind(
+              cleanProfile.id,
+              cleanProfile.username,
+              cleanProfile.titleAr,
+              cleanProfile.titleEn,
+              cleanProfile.characterClass,
+              cleanProfile.robeColor,
+              cleanProfile.auraColor,
+              cleanProfile.level,
+              cleanProfile.echoMastery,
+              this.meta.roomId,
+              att.transform.realm,
+              cleanProfile.createdAt,
+              now
+            )
+            .run()
+            .catch(() => {})
+        );
+      }
 
       // Register presence & fetch friends/party/rooms from EchoLobbyDO
       const lobbyRes = await this.callLobby('/internal/presence-upsert', {
@@ -777,40 +782,42 @@ export class EchoRoomDO extends DurableObject<Env> {
         this.sendPacket(ws, { type: 'S_PARTY_STATE', party: lobbyRes.party });
       }
 
-      // Send recent persistent chat history from D1 (last 15 room messages)
-      this.ctx.waitUntil(
-        this.env.DB.prepare(
-          'SELECT id, sender_id, sender_name, sender_color, realm, channel, text, created_at FROM chat_history WHERE room_id = ? ORDER BY created_at DESC LIMIT 15'
-        )
-          .bind(this.meta.roomId)
-          .all<{
-            id: string;
-            sender_id: string;
-            sender_name: string;
-            sender_color: string;
-            realm: string;
-            channel: string;
-            text: string;
-            created_at: number;
-          }>()
-          .then((res) => {
-            const rows = (res.results || []).reverse();
-            for (const row of rows) {
-              this.sendPacket(ws, {
-                type: 'S_CHAT_BROADCAST',
-                id: row.id,
-                senderId: row.sender_id,
-                senderName: row.sender_name,
-                senderColor: row.sender_color,
-                realm: row.realm === 'DARK_REALM' ? 'DARK_REALM' : 'ISLAND',
-                channel: 'ROOM',
-                text: row.text,
-                timestamp: row.created_at,
-              });
-            }
-          })
-          .catch(() => {})
-      );
+      // Send recent persistent chat history from D1 (last 15 room messages) when bound
+      if (this.env.DB) {
+        this.ctx.waitUntil(
+          this.env.DB.prepare(
+            'SELECT id, sender_id, sender_name, sender_color, realm, channel, text, created_at FROM chat_history WHERE room_id = ? ORDER BY created_at DESC LIMIT 15'
+          )
+            .bind(this.meta.roomId)
+            .all<{
+              id: string;
+              sender_id: string;
+              sender_name: string;
+              sender_color: string;
+              realm: string;
+              channel: string;
+              text: string;
+              created_at: number;
+            }>()
+            .then((res) => {
+              const rows = (res.results || []).reverse();
+              for (const row of rows) {
+                this.sendPacket(ws, {
+                  type: 'S_CHAT_BROADCAST',
+                  id: row.id,
+                  senderId: row.sender_id,
+                  senderName: row.sender_name,
+                  senderColor: row.sender_color,
+                  realm: row.realm === 'DARK_REALM' ? 'DARK_REALM' : 'ISLAND',
+                  channel: 'ROOM',
+                  text: row.text,
+                  timestamp: row.created_at,
+                });
+              }
+            })
+            .catch(() => {})
+        );
+      }
 
       this.updateLobbyRoomCount();
       return;
@@ -851,21 +858,23 @@ export class EchoRoomDO extends DurableObject<Env> {
             voice: att.voice,
           })
         );
-        this.ctx.waitUntil(
-          this.env.DB.prepare(
-            'UPDATE players SET username = ?, character_class = ?, robe_color = ?, aura_color = ?, updated_at = ? WHERE id = ?'
-          )
-            .bind(
-              att.profile.username,
-              att.profile.characterClass,
-              att.profile.robeColor,
-              att.profile.auraColor,
-              now,
-              att.playerId
+        if (this.env.DB) {
+          this.ctx.waitUntil(
+            this.env.DB.prepare(
+              'UPDATE players SET username = ?, character_class = ?, robe_color = ?, aura_color = ?, updated_at = ? WHERE id = ?'
             )
-            .run()
-            .catch(() => {})
-        );
+              .bind(
+                att.profile.username,
+                att.profile.characterClass,
+                att.profile.robeColor,
+                att.profile.auraColor,
+                now,
+                att.playerId
+              )
+              .run()
+              .catch(() => {})
+          );
+        }
         break;
       }
 
@@ -1017,12 +1026,14 @@ export class EchoRoomDO extends DurableObject<Env> {
               voice: att.voice,
             })
           );
-          this.ctx.waitUntil(
-            this.env.DB.prepare('UPDATE players SET last_realm = ?, updated_at = ? WHERE id = ?')
-              .bind(nextRealm, now, att.playerId)
-              .run()
-              .catch(() => {})
-          );
+          if (this.env.DB) {
+            this.ctx.waitUntil(
+              this.env.DB.prepare('UPDATE players SET last_realm = ?, updated_at = ? WHERE id = ?')
+                .bind(nextRealm, now, att.playerId)
+                .run()
+                .catch(() => {})
+            );
+          }
         }
 
         this.broadcastRoom(
@@ -1303,24 +1314,26 @@ export class EchoRoomDO extends DurableObject<Env> {
 
         if (channel === 'ROOM') {
           this.broadcastRoom(chatPacket);
-          this.ctx.waitUntil(
-            this.env.DB.prepare(
-              'INSERT INTO chat_history (id, room_id, sender_id, sender_name, sender_color, realm, channel, text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-            )
-              .bind(
-                chatPacket.id,
-                this.meta.roomId,
-                chatPacket.senderId,
-                chatPacket.senderName,
-                chatPacket.senderColor,
-                chatPacket.realm,
-                'ROOM',
-                chatPacket.text,
-                now
+          if (this.env.DB) {
+            this.ctx.waitUntil(
+              this.env.DB.prepare(
+                'INSERT INTO chat_history (id, room_id, sender_id, sender_name, sender_color, realm, channel, text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
               )
-              .run()
-              .catch(() => {})
-          );
+                .bind(
+                  chatPacket.id,
+                  this.meta.roomId,
+                  chatPacket.senderId,
+                  chatPacket.senderName,
+                  chatPacket.senderColor,
+                  chatPacket.realm,
+                  'ROOM',
+                  chatPacket.text,
+                  now
+                )
+                .run()
+                .catch(() => {})
+            );
+          }
         } else {
           await this.callLobby('/internal/cross-chat', {
             senderId: att.playerId,

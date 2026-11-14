@@ -130,13 +130,13 @@ export function resolveMultiplayerEndpoints(): MultiplayerEndpoints {
     }
   }
 
-  // 4. Static hosts without built-in WebSocket/API backend (Cloudflare Workers Static Assets / Pages / GitHub Pages / Electron / Capacitor)
+  // 4. Static hosts without built-in WebSocket/API backend (Cloudflare Pages / GitHub Pages / Electron / Capacitor)
   if (typeof window !== 'undefined' && window.location) {
     const host = window.location.hostname.toLowerCase();
     const proto = window.location.protocol;
     const port = window.location.port;
     const isGitHubPages = host.endsWith('.github.io') || host === 'github.io';
-    const isCloudflareStatic = host.endsWith('.workers.dev') || host.endsWith('.pages.dev');
+    const isCloudflarePagesStatic = host.endsWith('.pages.dev');
     const isOtherStaticHost = host.endsWith('.vercel.app') || host.endsWith('.netlify.app');
     const isVitePreview = (host === 'localhost' || host === '127.0.0.1') && port === '4173';
     const isElectronStatic = host === '127.0.0.1' && port !== '3000' && port !== '4173';
@@ -144,7 +144,7 @@ export function resolveMultiplayerEndpoints(): MultiplayerEndpoints {
 
     if (
       isGitHubPages ||
-      isCloudflareStatic ||
+      isCloudflarePagesStatic ||
       isOtherStaticHost ||
       isVitePreview ||
       isElectronStatic ||
@@ -160,7 +160,7 @@ export function resolveMultiplayerEndpoints(): MultiplayerEndpoints {
       };
     }
 
-    // 5. Full-stack Express + Vite server (local dev / self-hosted Node)
+    // 5. Full-stack Cloudflare Worker + Assets or Express + Vite server (same-origin)
     const wsProto = proto === 'https:' ? 'wss:' : 'ws:';
     return {
       wsUrl: `${wsProto}//${window.location.host}/ws`,

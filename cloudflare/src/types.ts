@@ -4,7 +4,8 @@ export type RoomId = string;
 export type PartyId = string;
 
 export interface Env {
-  DB: D1Database;
+  DB?: D1Database;
+  ASSETS?: Fetcher;
   ECHO_ROOM: DurableObjectNamespace;
   ECHO_LOBBY: DurableObjectNamespace;
   AUTH_SECRET?: string;

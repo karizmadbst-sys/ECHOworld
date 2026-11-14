@@ -6081,7 +6081,11 @@ export class GameUI {
       if (ok) {
         this.showToast('🟢 Connected to real-time multiplayer server!');
       } else if (raw) {
-        this.showToast('⚠️ Could not connect to WebSocket server. Check URL.');
+        this.showToast(
+          coord.lastAuthError
+            ? `⚠️ ${coord.lastAuthError}`
+            : '⚠️ Could not connect to WebSocket server. Check URL.'
+        );
       }
       this.updateMultiplayerModalContent();
     });
@@ -6452,9 +6456,15 @@ export class GameUI {
     }
     const serverStatusHint = document.getElementById('mp-server-status-hint');
     if (serverStatusHint) {
-      serverStatusHint.textContent = coord.endpoints.isConfigured
-        ? `Endpoint: ${coord.endpoints.wsUrl}`
-        : 'Enter your Cloudflare Worker URL (wss://...workers.dev) or set VITE_MULTIPLAYER_WS_URL in GitHub Variables.';
+      if (coord.lastAuthError) {
+        serverStatusHint.textContent = `⚠️ ${coord.lastAuthError}`;
+        serverStatusHint.style.color = '#fb7185';
+      } else {
+        serverStatusHint.style.color = '#94a3b8';
+        serverStatusHint.textContent = coord.endpoints.isConfigured
+          ? `Endpoint: ${coord.endpoints.wsUrl}`
+          : 'Enter your Cloudflare Worker URL (wss://...workers.dev) or set VITE_MULTIPLAYER_WS_URL.';
+      }
     }
     const cloudStatusText = document.getElementById('mp-cloud-status-text');
     if (cloudStatusText) {

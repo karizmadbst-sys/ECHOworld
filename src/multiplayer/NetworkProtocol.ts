@@ -49,7 +49,13 @@ export function normalizeServerUrls(rawInput: string): { wsUrl: string; apiUrl: 
     const isSecure = u.protocol === 'https:' || u.protocol === 'wss:';
     const wsProto = isSecure ? 'wss:' : 'ws:';
     const httpProto = isSecure ? 'https:' : 'http:';
-    const basePath = u.pathname.replace(/\/ws\/?$/i, '').replace(/\/+$/, '');
+    const basePath = u.pathname
+      .replace(/\/api\/auth\/session\/?$/i, '')
+      .replace(/\/api\/player\/save\/?$/i, '')
+      .replace(/\/api\/health\/?$/i, '')
+      .replace(/\/api\/rooms\/?$/i, '')
+      .replace(/\/ws\/?$/i, '')
+      .replace(/\/+$/, '');
     const wsUrl = `${wsProto}//${u.host}${basePath}/ws`;
     const apiUrl = `${httpProto}//${u.host}${basePath}`;
     return { wsUrl, apiUrl };
@@ -109,30 +115,45 @@ export function resolveMultiplayerEndpoints(): MultiplayerEndpoints {
     // ignore
   }
 
-  // 3. Build-time Vite env variables (set by GitHub Pages workflow / .env)
+  // 3. Build-time Vite env variables (set by GitHub Pages / Cloudflare Workers Builds / .env)
   const envWs = (import.meta as any).env?.VITE_MULTIPLAYER_WS_URL as string | undefined;
   const envApi = (import.meta as any).env?.VITE_MULTIPLAYER_API_URL as string | undefined;
-  if (envWs && envWs.trim()) {
-    const parsed = normalizeServerUrls(envWs);
+  const envEndpoint = (envWs && envWs.trim()) || (envApi && envApi.trim()) || '';
+  if (envEndpoint) {
+    const parsed = normalizeServerUrls(envEndpoint);
     if (parsed) {
+      const apiParsed = envApi && envApi.trim() ? normalizeServerUrls(envApi.trim()) : null;
       return {
         wsUrl: parsed.wsUrl,
-        apiUrl: envApi && envApi.trim() ? envApi.trim().replace(/\/+$/, '') : parsed.apiUrl,
+        apiUrl: apiParsed?.apiUrl || parsed.apiUrl,
         isConfigured: true,
         source: 'env',
       };
     }
   }
 
-  // 4. Static hosts without built-in WebSocket backend (GitHub Pages / Electron / Capacitor)
+  // 4. Static hosts without built-in WebSocket/API backend (Cloudflare Workers Static Assets / Pages / GitHub Pages / Electron / Capacitor)
   if (typeof window !== 'undefined' && window.location) {
     const host = window.location.hostname.toLowerCase();
     const proto = window.location.protocol;
-    const isGitHubPages = host.endsWith('github.io');
-    const isElectronStatic = host === '127.0.0.1' && window.location.port !== '3000';
-    const isCapacitor = proto === 'capacitor:' || (host === 'localhost' && !window.location.port);
+    const port = window.location.port;
+    const isGitHubPages = host.endsWith('.github.io') || host === 'github.io';
+    const isCloudflareStatic = host.endsWith('.workers.dev') || host.endsWith('.pages.dev');
+    const isOtherStaticHost = host.endsWith('.vercel.app') || host.endsWith('.netlify.app');
+    const isVitePreview = (host === 'localhost' || host === '127.0.0.1') && port === '4173';
+    const isElectronStatic = host === '127.0.0.1' && port !== '3000' && port !== '4173';
+    const isCapacitor = proto === 'capacitor:' || (host === 'localhost' && !port);
 
-    if (isGitHubPages || isElectronStatic || isCapacitor || proto === 'file:' || !window.location.host) {
+    if (
+      isGitHubPages ||
+      isCloudflareStatic ||
+      isOtherStaticHost ||
+      isVitePreview ||
+      isElectronStatic ||
+      isCapacitor ||
+      proto === 'file:' ||
+      !window.location.host
+    ) {
       return {
         wsUrl: '',
         apiUrl: '',
@@ -163,14 +184,31 @@ export function resolveDefaultWebSocketUrl(): string {
   return resolveMultiplayerEndpoints().wsUrl;
 }
 
-export function getCachedAuthToken(playerId: string): string | null {
+export interface CloudAuthResult {
+  ok: boolean;
+  token?: string;
+  expiresAt?: number;
+  cloudUpdatedAt?: number;
+  status?: number;
+  error?: string;
+}
+
+export function getCachedAuthToken(playerId: string, apiUrl?: string): string | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_AUTH_TOKEN);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { playerId: string; token: string; expiresAt: number };
+    const parsed = JSON.parse(raw) as {
+      playerId: string;
+      token: string;
+      expiresAt: number;
+      apiUrl?: string;
+    };
+    const expectedApi = apiUrl ? normalizeServerUrls(apiUrl)?.apiUrl || apiUrl : undefined;
+    const matchesApi = !expectedApi || !parsed.apiUrl || parsed.apiUrl === expectedApi;
     if (
       parsed &&
       parsed.playerId === playerId &&
+      matchesApi &&
       typeof parsed.token === 'string' &&
       parsed.expiresAt > Date.now() + 60_000
     ) {
@@ -182,9 +220,21 @@ export function getCachedAuthToken(playerId: string): string | null {
   return null;
 }
 
-export function cacheAuthToken(playerId: string, token: string, expiresAt: number): void {
+export function cacheAuthToken(playerId: string, token: string, expiresAt: number, apiUrl?: string): void {
   try {
-    localStorage.setItem(STORAGE_KEY_AUTH_TOKEN, JSON.stringify({ playerId, token, expiresAt }));
+    const cleanApi = apiUrl ? normalizeServerUrls(apiUrl)?.apiUrl || apiUrl : undefined;
+    localStorage.setItem(
+      STORAGE_KEY_AUTH_TOKEN,
+      JSON.stringify({ playerId, token, expiresAt, apiUrl: cleanApi })
+    );
+  } catch {
+    // ignore
+  }
+}
+
+export function clearCachedAuthToken(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY_AUTH_TOKEN);
   } catch {
     // ignore
   }
@@ -193,38 +243,80 @@ export function cacheAuthToken(playerId: string, token: string, expiresAt: numbe
 export async function authenticateCloudSession(
   apiUrl: string,
   profile: PlayerAccountProfile
-): Promise<{ token: string; expiresAt: number; cloudUpdatedAt: number } | null> {
-  if (!apiUrl) return null;
+): Promise<CloudAuthResult> {
+  const cleanApiUrl = normalizeServerUrls(apiUrl)?.apiUrl;
+  if (!cleanApiUrl) {
+    return { ok: false, error: 'Missing multiplayer API URL for /api/auth/session.' };
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 5000);
   try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 4000);
-    const res = await fetch(`${apiUrl}/api/auth/session`, {
+    const res = await fetch(`${cleanApiUrl}/api/auth/session`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
       body: JSON.stringify({ playerId: profile.id, profile }),
       signal: controller.signal,
     });
-    window.clearTimeout(timer);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      let errDetail = '';
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body?.error) errDetail = body.error;
+      } catch {
+        // Non-JSON error response (e.g., static host 405 page)
+      }
+      if (res.status === 405) {
+        return {
+          ok: false,
+          status: 405,
+          error:
+            errDetail ||
+            'Session auth failed (HTTP 405 Method Not Allowed): endpoint only serves static assets or expects POST /api/auth/session.',
+        };
+      }
+      return {
+        ok: false,
+        status: res.status,
+        error: errDetail || `Session auth failed (HTTP ${res.status}).`,
+      };
+    }
     const data = (await res.json()) as {
       ok?: boolean;
       token?: string;
       expiresAt?: number;
       cloudUpdatedAt?: number;
+      error?: string;
     };
-    if (data?.ok && data.token) {
+    if (data?.ok && typeof data.token === 'string' && data.token.length > 0) {
       const expiresAt = data.expiresAt || Date.now() + 7 * 24 * 60 * 60 * 1000;
-      cacheAuthToken(profile.id, data.token, expiresAt);
+      cacheAuthToken(profile.id, data.token, expiresAt, cleanApiUrl);
       return {
+        ok: true,
         token: data.token,
         expiresAt,
         cloudUpdatedAt: data.cloudUpdatedAt || 0,
+        status: res.status,
       };
     }
-  } catch {
-    // Fallback gracefully to cached token or direct WS C_AUTH
+    return {
+      ok: false,
+      status: res.status,
+      error: data?.error || 'Session endpoint did not return a valid session token.',
+    };
+  } catch (err) {
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return {
+      ok: false,
+      error: isAbort
+        ? 'Session authentication timed out reaching /api/auth/session.'
+        : 'Could not reach /api/auth/session.',
+    };
+  } finally {
+    window.clearTimeout(timer);
   }
-  return null;
 }
 
 export async function uploadCloudPlayerSave(

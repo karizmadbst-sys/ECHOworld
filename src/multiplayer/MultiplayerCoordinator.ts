@@ -24,7 +24,9 @@ import {
   MultiplayerEndpoints,
   resolveMultiplayerEndpoints,
   setCustomMultiplayerServerUrl,
+  normalizeServerUrls,
   getCachedAuthToken,
+  clearCachedAuthToken,
   authenticateCloudSession,
   uploadCloudPlayerSave,
   downloadCloudPlayerSave,
@@ -76,6 +78,7 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
   public pendingDarkSnapshot: Partial<RoomWorldSnapshot> | null = null;
   public endpoints: MultiplayerEndpoints = resolveMultiplayerEndpoints();
   public authToken: string | null = null;
+  public lastAuthError: string | null = null;
   public cloudSaveLastSyncAt: number = 0;
 
   // UI Listeners
@@ -120,7 +123,7 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
     this.voice = new VoiceChatManager(this);
     this.voice.setLocalPlayerId(this.account.getProfile().id);
     this.transport = new OfflineLoopbackTransport();
-    this.authToken = getCachedAuthToken(this.account.getProfile().id);
+    this.authToken = getCachedAuthToken(this.account.getProfile().id, this.endpoints.apiUrl);
 
     // Check URL deep-link ?room=ROOM-XXXXX
     if (typeof window !== 'undefined' && window.location) {
@@ -170,7 +173,12 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
   public async configureAndConnectServer(rawUrl: string | null): Promise<boolean> {
     this.endpoints = setCustomMultiplayerServerUrl(rawUrl);
     if (!this.endpoints.isConfigured || !this.endpoints.wsUrl) {
+      this.cleanupPacketListener?.();
+      this.cleanupConnListener?.();
       this.transport.disconnect();
+      this.authToken = null;
+      this.lastAuthError = null;
+      clearCachedAuthToken();
       this.connectionStatus = 'OFFLINE';
       this.onStateUpdated?.();
       return false;
@@ -180,8 +188,13 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
 
   public async connectToCentralServer(wsUrl?: string): Promise<boolean> {
     this.endpoints = resolveMultiplayerEndpoints();
-    const targetUrl = wsUrl || this.endpoints.wsUrl;
-    if (!targetUrl) {
+    const rawTarget = wsUrl || this.endpoints.wsUrl;
+    const normalized = rawTarget ? normalizeServerUrls(rawTarget) : null;
+    const targetUrl = normalized?.wsUrl || rawTarget;
+    const targetApiUrl =
+      (wsUrl && normalized?.apiUrl) || this.endpoints.apiUrl || normalized?.apiUrl || '';
+
+    if (!targetUrl || !targetApiUrl) {
       this.connectionStatus = 'OFFLINE';
       this.onStateUpdated?.();
       return false;
@@ -189,24 +202,33 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
 
     this.config.serverUrl = targetUrl;
     this.connectionStatus = 'CONNECTING';
+    this.lastAuthError = null;
     this.onStateUpdated?.();
 
     this.cleanupPacketListener?.();
     this.cleanupConnListener?.();
     this.transport.disconnect();
 
-    // Authenticate with Cloudflare Worker /api/auth/session for signed session token + D1 upsert
+    // 1. Verify HTTP session authentication (/api/auth/session) BEFORE connecting to WebSocket (/ws)
     const profile = this.account.getProfile();
-    if (this.endpoints.apiUrl) {
-      const authRes = await authenticateCloudSession(this.endpoints.apiUrl, profile);
-      if (authRes?.token) {
-        this.authToken = authRes.token;
-      }
+    const authRes = await authenticateCloudSession(targetApiUrl, profile);
+    if (!authRes.ok || !authRes.token) {
+      this.authToken = null;
+      clearCachedAuthToken();
+      this.lastAuthError =
+        authRes.error || 'Authentication failed before opening WebSocket connection.';
+      this.connectionStatus = 'OFFLINE';
+      this.onStateUpdated?.();
+      return false;
     }
 
+    this.authToken = authRes.token;
+    this.lastAuthError = null;
+
+    // 2. Connect to the WebSocket multiplayer endpoint (/ws) with the verified session token
     const wsAdapter = new WebSocketTransportAdapter(targetUrl);
     wsAdapter.setRoom(this.desiredRoomId || this.currentRoomId || DEFAULT_PUBLIC_ROOM_ID);
-    if (this.authToken) wsAdapter.setToken(this.authToken);
+    wsAdapter.setToken(this.authToken);
     this.transport = wsAdapter;
 
     this.cleanupPacketListener = this.transport.onPacket((packet) => {
@@ -223,7 +245,7 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
 
     const ok = await wsAdapter.connect(
       targetUrl,
-      this.authToken || undefined,
+      this.authToken,
       this.desiredRoomId || this.currentRoomId || DEFAULT_PUBLIC_ROOM_ID
     );
     if (!ok) {
@@ -1197,7 +1219,7 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
     const profile = this.account.getProfile();
     if (!this.authToken) {
       const authRes = await authenticateCloudSession(this.endpoints.apiUrl, profile);
-      if (authRes?.token) this.authToken = authRes.token;
+      if (authRes.ok && authRes.token) this.authToken = authRes.token;
     }
     if (!this.authToken) return false;
 
@@ -1217,7 +1239,7 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
     const profile = this.account.getProfile();
     if (!this.authToken) {
       const authRes = await authenticateCloudSession(this.endpoints.apiUrl, profile);
-      if (authRes?.token) this.authToken = authRes.token;
+      if (authRes.ok && authRes.token) this.authToken = authRes.token;
     }
     if (!this.authToken) return false;
 

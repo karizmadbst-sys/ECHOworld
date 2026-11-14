@@ -46,7 +46,13 @@ export default {
     }
 
     // 2. Player Authentication & Signed Session Token Endpoint (+ optional D1 cloud save metadata)
-    if (url.pathname === '/api/auth/session' && request.method === 'POST') {
+    if (url.pathname === '/api/auth/session') {
+      if (request.method !== 'POST') {
+        return Response.json(
+          { ok: false, error: 'Method Not Allowed. Use POST /api/auth/session.' },
+          { status: 405, headers: { ...headers, Allow: 'POST, OPTIONS' } }
+        );
+      }
       const body = (await request.json().catch(() => ({}))) as Record<string, any>;
       const profile = body.profile || {};
       const playerId = String(body.playerId || profile.id || '').trim().slice(0, 80);
@@ -167,6 +173,11 @@ export default {
           return Response.json({ ok: false, error: 'Database write failed' }, { status: 500, headers });
         }
       }
+
+      return Response.json(
+        { ok: false, error: 'Method Not Allowed. Use GET or POST /api/player/save.' },
+        { status: 405, headers: { ...headers, Allow: 'GET, POST, OPTIONS' } }
+      );
     }
 
     // 4. Room directory HTTP query

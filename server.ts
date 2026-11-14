@@ -1324,6 +1324,19 @@ async function startServer(): Promise<void> {
   const mpServer = new EchoMultiplayerServer();
   const localCloudSaves = new Map<string, { save: unknown; darkProgress: unknown; updatedAt: number }>();
 
+  app.use('/api', (req, res, next) => {
+    const origin = req.headers.origin;
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Vary', 'Origin');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
+
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, service: 'echo-multiplayer', timestamp: Date.now() });
   });
@@ -1342,6 +1355,11 @@ async function startServer(): Promise<void> {
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       cloudUpdatedAt: existing?.updatedAt || 0,
     });
+  });
+
+  app.all('/api/auth/session', (_req, res) => {
+    res.setHeader('Allow', 'POST, OPTIONS');
+    res.status(405).json({ ok: false, error: 'Method Not Allowed. Use POST /api/auth/session.' });
   });
 
   app.get('/api/player/save', (req, res) => {
@@ -1378,6 +1396,11 @@ async function startServer(): Promise<void> {
       updatedAt,
     });
     res.json({ ok: true, updatedAt });
+  });
+
+  app.all('/api/player/save', (_req, res) => {
+    res.setHeader('Allow', 'GET, POST, OPTIONS');
+    res.status(405).json({ ok: false, error: 'Method Not Allowed. Use GET or POST /api/player/save.' });
   });
 
   const server = http.createServer(app);

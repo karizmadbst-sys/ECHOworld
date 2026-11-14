@@ -90,6 +90,7 @@ export class Game {
   public isMobileDevice: boolean = false;
   public weaponSystem!: WeaponSystem;
   private touchAttackHeld: boolean = false;
+  private touchAttackJustPressed: boolean = false;
   private bubblePoints!: THREE.Points;
   private bubblePositions!: Float32Array;
   private bubbleSpeeds!: Float32Array;
@@ -427,6 +428,7 @@ export class Game {
       },
       onCombatAttack: () => {
         if (this.state === GameState.PLAYING && !this.ui.getIsModalOrPaused()) {
+          this.touchAttackJustPressed = true;
           if (this.isInDarkRealm && this.darkRealm) {
             this.darkRealm.triggerPrimaryAction();
             this.syncMinecraftHud();
@@ -580,12 +582,14 @@ export class Game {
       this.input.resetAllInputs();
       this.ui.resetAllTouchStates();
       this.touchAttackHeld = false;
+      this.touchAttackJustPressed = false;
     });
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         this.input.resetAllInputs();
         this.ui.resetAllTouchStates();
         this.touchAttackHeld = false;
+        this.touchAttackJustPressed = false;
       } else {
         this.lastTime = performance.now();
       }
@@ -650,6 +654,7 @@ export class Game {
     this.clearPendingTimers();
     this.input.resetAllInputs();
     this.ui.resetAllTouchStates();
+    this.touchAttackJustPressed = false;
 
     this.sound.init();
     this.sound.resume();
@@ -698,6 +703,7 @@ export class Game {
     this.clearPendingTimers();
     this.input.resetAllInputs();
     this.ui.resetAllTouchStates();
+    this.touchAttackJustPressed = false;
 
     this.sound.init();
     this.sound.resume();
@@ -727,6 +733,7 @@ export class Game {
     this.input.resetAllInputs();
     this.input.releasePointerLock();
     this.ui.resetAllTouchStates();
+    this.touchAttackJustPressed = false;
 
     if (this.isInDarkRealm && this.darkRealm) {
       this.darkRealm.deactivate();
@@ -806,6 +813,7 @@ export class Game {
     this.clearPendingTimers();
     this.input.resetAllInputs();
     this.ui.resetAllTouchStates();
+    this.touchAttackJustPressed = false;
     this.ui.closeBuildCraftModal();
 
     this.sound.init();
@@ -861,6 +869,7 @@ export class Game {
     if (!this.isInDarkRealm) return;
     this.input.resetAllInputs();
     this.ui.resetAllTouchStates();
+    this.touchAttackJustPressed = false;
     this.ui.closeBuildCraftModal();
     this.resetWorld1MiningState();
 
@@ -1069,6 +1078,7 @@ export class Game {
   public resetPlayerPosition(): void {
     this.input.resetAllInputs();
     this.ui.resetAllTouchStates();
+    this.touchAttackJustPressed = false;
     if (this.isInDarkRealm && this.darkRealm) {
       this.darkRealm.resetPlayerToSpawn();
       this.cameraSystem.yaw = 0;
@@ -1454,6 +1464,7 @@ export class Game {
           );
         }
       }
+      this.touchAttackJustPressed = false;
       this.input.clearFrameDeltas();
       return;
     }
@@ -1864,6 +1875,7 @@ export class Game {
     }
 
     // Clear one-frame input triggers
+    this.touchAttackJustPressed = false;
     this.input.clearFrameDeltas();
   }
 
@@ -2253,7 +2265,7 @@ export class Game {
       const hitRock = this.forest.damageNearestBoulder(this.player.position, 28);
       if (hitRock) {
         this.player.triggerAttackAnimation();
-        this.multiplayer.broadcastCombatAttack(1);
+        this.multiplayer.broadcastCombatAttack(this.player.attackComboStep ?? 0);
         this.sound.playPickaxeHit();
         this.multiplayer.broadcastResourceHit({
           resourceType: 'WORLD1_BOULDER',
@@ -2293,7 +2305,7 @@ export class Game {
     }
 
     this.combatSystem.executePlayerAttack();
-    this.multiplayer.broadcastCombatAttack(this.player.attackComboStep || 1);
+    this.multiplayer.broadcastCombatAttack(this.player.attackComboStep ?? 0);
     if (this.combatSystem.lastAttackHits === 0) {
       const hitTree = this.forest.damageNearestTree(this.player.position, 24);
       if (hitTree) {
@@ -2406,7 +2418,7 @@ export class Game {
     };
     darkRealm.onCombatAction = (kind) => {
       if (kind === 'ATTACK') {
-        this.multiplayer.broadcastCombatAttack(1);
+        this.multiplayer.broadcastCombatAttack(this.player.attackComboStep ?? 0);
       } else if (kind === 'DODGE') {
         this.multiplayer.broadcastCombatDodge(this.input.moveInput.x, this.input.moveInput.y);
       } else {
@@ -2767,7 +2779,7 @@ export class Game {
       enabled,
       buildMode: this.sharedProgress.buildMode,
       hotbarSlot: this.sharedProgress.activeSlotIndex,
-      isAttackPressed: this.input.attackJustPressed,
+      isAttackPressed: this.input.attackJustPressed || this.touchAttackJustPressed,
       isAttackHeld: this.input.isAttackHeld || this.touchAttackHeld,
       isRightHeld: this.input.isSecondaryHeld,
       reloadPressed: this.input.reloadJustPressed,

@@ -62,9 +62,13 @@ export interface PlayerTransformSnapshot {
   hp?: number;
   maxHp?: number;
   weapon?: 'sword' | 'pistol' | 'bow';
+  equippedTool?: 'sword' | 'pickaxe' | 'axe' | 'bow' | 'pistol' | 'block';
+  heldBlockColor?: number;
   isBlocking?: boolean;
   isAiming?: boolean;
   bowDraw?: number;
+  swimInputX?: number;
+  swimInputY?: number;
   timestamp: number;
 }
 

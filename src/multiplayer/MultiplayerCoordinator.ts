@@ -342,8 +342,11 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
     const rz = round3(p.position.z);
     const angle = round3(p.currentFacingAngle ?? 0);
     const draw = round3(p.bowDrawAmount || 0);
+    const swimInputX = round3(p.lastSwimInputX || 0);
+    const swimInputY = round3(p.lastSwimInputY || 0);
+    const comboStep = p.attackComboStep ?? 0;
 
-    const sig = `${rx},${ry},${rz},${angle},${action},${realm},${p.equippedWeapon},${p.isBlocking},${p.isAiming},${draw},${Math.round(hp)}`;
+    const sig = `${rx},${ry},${rz},${angle},${action},${comboStep},${realm},${p.equippedWeapon},${p.equippedTool},${p.heldBlockColor},${p.isBlocking},${p.isAiming},${draw},${swimInputX},${swimInputY},${Math.round(hp)}`;
     const now = performance.now();
     if (!force && sig === this.lastSentSig && now - this.lastTransformSentAt < 950) {
       return;
@@ -363,14 +366,18 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
       isMoving: p.isMoving,
       isSprinting: p.isSprinting,
       actionState: action,
-      comboStep: p.attackComboStep || 1,
+      comboStep,
       realm,
       hp: Math.round(hp),
       maxHp: Math.round(maxHp),
       weapon: p.equippedWeapon,
+      equippedTool: p.equippedTool,
+      heldBlockColor: p.heldBlockColor,
       isBlocking: p.isBlocking,
       isAiming: p.isAiming,
       bowDraw: draw,
+      swimInputX,
+      swimInputY,
       timestamp: Date.now(),
     };
 
@@ -384,7 +391,7 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
   // COMBAT, VOXEL, WORLD & RESOURCE BROADCASTS
   // ==========================================
 
-  public broadcastCombatAttack(comboStep: number = 1): void {
+  public broadcastCombatAttack(comboStep: number = 0): void {
     if (!this.transport.isConnected || !this.game?.player) return;
     this.transport.send({
       type: 'C_COMBAT_ATTACK',

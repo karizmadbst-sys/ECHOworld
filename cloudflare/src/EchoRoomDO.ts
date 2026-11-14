@@ -990,6 +990,15 @@ export class EchoRoomDO extends DurableObject<Env> {
         const t = packet.transform;
         const nextRealm: RealmId = t.realm === 'DARK_REALM' ? 'DARK_REALM' : 'ISLAND';
 
+        const validTool =
+          t.equippedTool === 'pickaxe' ||
+          t.equippedTool === 'axe' ||
+          t.equippedTool === 'bow' ||
+          t.equippedTool === 'pistol' ||
+          t.equippedTool === 'block'
+            ? t.equippedTool
+            : 'sword';
+
         att.transform = {
           x: clampFinite(t.x, att.transform.x, -4000, 4000),
           y: clampFinite(t.y, att.transform.y, -500, 2000),
@@ -1002,14 +1011,21 @@ export class EchoRoomDO extends DurableObject<Env> {
           isMoving: Boolean(t.isMoving),
           isSprinting: Boolean(t.isSprinting),
           actionState: String(t.actionState || 'IDLE').slice(0, 24),
-          comboStep: clampFinite(t.comboStep, 1, 1, 10),
+          comboStep: clampFinite(t.comboStep, 0, 0, 10),
           realm: nextRealm,
           hp: typeof t.hp === 'number' ? clampFinite(t.hp, 100, 0, 99999) : att.transform.hp,
           maxHp: typeof t.maxHp === 'number' ? clampFinite(t.maxHp, 100, 1, 99999) : att.transform.maxHp,
           weapon: t.weapon === 'pistol' || t.weapon === 'bow' ? t.weapon : 'sword',
+          equippedTool: validTool,
+          heldBlockColor:
+            typeof t.heldBlockColor === 'number'
+              ? Math.round(clampFinite(t.heldBlockColor, 0x8b5a2b, 0, 0xffffff))
+              : att.transform.heldBlockColor,
           isBlocking: Boolean(t.isBlocking),
           isAiming: Boolean(t.isAiming),
           bowDraw: typeof t.bowDraw === 'number' ? clampFinite(t.bowDraw, 0, 0, 2) : 0,
+          swimInputX: typeof t.swimInputX === 'number' ? clampFinite(t.swimInputX, 0, -1, 1) : 0,
+          swimInputY: typeof t.swimInputY === 'number' ? clampFinite(t.swimInputY, 0, -1, 1) : 0,
           timestamp: now,
         };
         this.setAttachment(ws, att);
@@ -1052,7 +1068,7 @@ export class EchoRoomDO extends DurableObject<Env> {
           {
             type: 'S_REMOTE_ATTACK',
             playerId: att.playerId,
-            comboStep: clampFinite(packet.comboStep, 1, 1, 6),
+            comboStep: clampFinite(packet.comboStep, 0, 0, 6),
             origin: packet.origin,
             facingAngle: clampFinite(packet.facingAngle, 0, -100, 100),
           },

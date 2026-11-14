@@ -361,15 +361,17 @@ export class Terrain {
    * Returns whether a given coordinate is in water (elevation below water line)
    */
   public isWaterAt(x: number, z: number): boolean {
-    return this.getHeightAt(x, z) < Terrain.WATER_LEVEL;
+    return this.getWaterDepthAt(x, z) > 0;
   }
 
   /**
    * Returns water depth at (x, z)
    */
   public getWaterDepthAt(x: number, z: number): number {
+    const lakeDist = Math.hypot(x - Terrain.LAKE_CENTER.x, z - Terrain.LAKE_CENTER.y);
+    const waterY = lakeDist < Terrain.LAKE_RADIUS + 4 ? Terrain.LAKE_WATER_Y : Terrain.WATER_LEVEL;
     const h = this.getHeightAt(x, z);
-    return Math.max(0, Terrain.WATER_LEVEL - h);
+    return Math.max(0, waterY - h);
   }
 
   /**

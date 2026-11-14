@@ -83,7 +83,7 @@ export class RemotePlayerManager {
     const entity = this.players.get(playerId);
     if (!entity || entity.realm !== this.localRealm) return;
     if (action === 'ATTACK') {
-      entity.playAttackAnimation(data?.comboStep ?? 1);
+      entity.playAttackAnimation(data?.comboStep ?? 0);
     } else if (action === 'DODGE') {
       entity.playDodgeAnimation();
     } else if (action === 'PULSE') {

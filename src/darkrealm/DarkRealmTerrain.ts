@@ -302,7 +302,12 @@ export class DarkRealmTerrain {
   public getWaterLevelAt(x: number, z: number): number | null {
     if (x < -205 || x > 205 || z < -345 || z > 255) return null;
     const rx = this.getRiverCenterX(z);
-    if (Math.abs(x - rx) < 13.0 || this.getMeshHeightAt(x, z) < 3.15) {
+    if (z > -255 && z < 245 && Math.abs(x - rx) < 15.5) {
+      if (this.computeRawGroundHeight(x, z) < 3.18) {
+        return 3.3;
+      }
+    }
+    if (this.getMeshHeightAt(x, z) < 3.15) {
       return 3.3;
     }
     return null;
@@ -486,7 +491,13 @@ export class DarkRealmTerrain {
   }
 
   public getHeightAt(x: number, z: number): number {
-    const ground = this.getMeshHeightAt(x, z);
+    let ground = this.getMeshHeightAt(x, z);
+    if (x >= -205 && x <= 205 && z > -255 && z < 245) {
+      const rx = this.getRiverCenterX(z);
+      if (Math.abs(x - rx) < 18) {
+        ground = Math.min(ground, this.computeRawGroundHeight(x, z));
+      }
+    }
     const structY = this.getStructureHeightAt(x, z, this.playerCurrentY);
     const providerY = this.floorHeightProvider ? this.floorHeightProvider(x, z) : null;
     let res = ground;

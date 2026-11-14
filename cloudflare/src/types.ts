@@ -43,9 +43,13 @@ export interface PlayerTransformSnapshot {
   hp?: number;
   maxHp?: number;
   weapon?: 'sword' | 'pistol' | 'bow';
+  equippedTool?: 'sword' | 'pickaxe' | 'axe' | 'bow' | 'pistol' | 'block';
+  heldBlockColor?: number;
   isBlocking?: boolean;
   isAiming?: boolean;
   bowDraw?: number;
+  swimInputX?: number;
+  swimInputY?: number;
   timestamp: number;
 }
 
@@ -162,14 +166,18 @@ export function defaultTransform(): PlayerTransformSnapshot {
     isMoving: false,
     isSprinting: false,
     actionState: 'IDLE',
-    comboStep: 1,
+    comboStep: 0,
     realm: 'ISLAND',
     hp: 100,
     maxHp: 100,
     weapon: 'sword',
+    equippedTool: 'sword',
+    heldBlockColor: 0x8b5a2b,
     isBlocking: false,
     isAiming: false,
     bowDraw: 0,
+    swimInputX: 0,
+    swimInputY: 0,
     timestamp: Date.now(),
   };
 }

@@ -520,7 +520,7 @@ class EchoMultiplayerServer {
           {
             type: 'S_REMOTE_ATTACK',
             playerId: client.playerId,
-            comboStep: packet.comboStep || 1,
+            comboStep: typeof packet.comboStep === 'number' ? packet.comboStep : 0,
             origin: packet.origin,
             facingAngle: packet.facingAngle,
           },

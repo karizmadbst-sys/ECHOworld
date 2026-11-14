@@ -232,6 +232,8 @@ export class GameUI {
   private joystickTouchId: number | null = null;
   private sprintTouchId: number | null = null;
   private sprintPointerId: number | null = null;
+  private attackPointerId: number | null = null;
+  private aimPointerId: number | null = null;
   private isSprintHeld: boolean = false;
   private sprintPressTime: number = 0;
   private joystickCenter = { x: 0, y: 0 };
@@ -3025,7 +3027,6 @@ export class GameUI {
 
         <!-- World 2 Quick Actions & Boss Bar (Shown Only Inside Shadow Realm) -->
         <div id="dark-realm-quick-bar" class="interactive">
-          <button id="dark-quick-map-btn" type="button" class="dark-quick-btn interactive" title="Shadow Realm Map & Fast Travel (M)">🗺️ Map [M]</button>
           <button id="dark-quick-quests-btn" type="button" class="dark-quick-btn interactive" title="122-Quest Codex (K / J)">📜 Codex [K]</button>
           <button id="dark-quick-companion-btn" type="button" class="dark-quick-btn interactive" title="Cycle Companion AI Mode">⚔️ Allies</button>
           <button id="dark-quick-weather-btn" type="button" class="dark-quick-btn interactive" title="Cycle Dark Realm Weather">🌙 Weather</button>
@@ -4109,11 +4110,6 @@ export class GameUI {
     });
 
     // World 2 Quick Action Bar & Pause Return to Island
-    document.getElementById('dark-quick-map-btn')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.callbacks.onOpenDarkMap?.();
-    });
     document.getElementById('dark-quick-quests-btn')?.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -4183,15 +4179,27 @@ export class GameUI {
     });
 
     if (this.weaponAimBtn) {
-      this.weaponAimBtn.addEventListener('pointerdown', (e) => {
+      const startAim = (e: PointerEvent) => {
         if (this.isCustomizingControls) return;
         e.preventDefault();
         e.stopPropagation();
+        if (this.aimPointerId !== null) return;
+        this.aimPointerId = e.pointerId;
+        try {
+          this.weaponAimBtn?.setPointerCapture?.(e.pointerId);
+        } catch {
+          // Safe fallback when pointer capture is unsupported
+        }
+        this.weaponAimBtn?.classList.add('active');
         this.callbacks.onSecondaryHoldChange?.(true);
-      });
-      const releaseAim = () => {
+      };
+      const releaseAim = (e: PointerEvent) => {
+        if (this.aimPointerId === null || e.pointerId !== this.aimPointerId) return;
+        this.aimPointerId = null;
+        this.weaponAimBtn?.classList.remove('active');
         this.callbacks.onSecondaryHoldChange?.(false);
       };
+      this.weaponAimBtn.addEventListener('pointerdown', startAim);
       this.weaponAimBtn.addEventListener('pointerup', releaseAim);
       this.weaponAimBtn.addEventListener('pointercancel', releaseAim);
       window.addEventListener('pointerup', releaseAim);
@@ -4654,32 +4662,52 @@ export class GameUI {
       if (document.hidden) this.resetAllTouchStates();
     });
 
-    // Combat Touch Actions (Instant pointer response with pointerdown+click deduplication)
-    const bindCombatTouch = (el: HTMLElement | null, cb?: () => void) => {
-      if (!el) return;
-      let lastTrigger = 0;
-      const trigger = (e: Event) => {
+    // Combat Touch Actions (Pointer-ID scoped so multi-touch movement/camera never breaks bow draw or rapid shots)
+    if (this.touchAttackBtn) {
+      this.touchAttackBtn.addEventListener('pointerdown', (e: PointerEvent) => {
         if (this.isCustomizingControls) return;
         e.preventDefault();
         e.stopPropagation();
-        const now = performance.now();
-        if (now - lastTrigger < 160) return;
-        lastTrigger = now;
-        cb?.();
+        if (this.attackPointerId !== null) return;
+        this.attackPointerId = e.pointerId;
+        try {
+          this.touchAttackBtn?.setPointerCapture?.(e.pointerId);
+        } catch {
+          // Safe fallback
+        }
+        this.touchAttackBtn?.classList.add('active');
+        this.callbacks.onCombatAttack?.();
+        this.callbacks.onAttackHoldChange?.(true);
+      });
+      this.touchAttackBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      const releaseTouchAttack = (e: PointerEvent) => {
+        if (this.attackPointerId === null || e.pointerId !== this.attackPointerId) return;
+        this.attackPointerId = null;
+        this.touchAttackBtn?.classList.remove('active');
+        this.callbacks.onAttackHoldChange?.(false);
       };
-      el.addEventListener('pointerdown', trigger);
-      el.addEventListener('click', trigger);
+      this.touchAttackBtn.addEventListener('pointerup', releaseTouchAttack);
+      this.touchAttackBtn.addEventListener('pointercancel', releaseTouchAttack);
+      window.addEventListener('pointerup', releaseTouchAttack);
+      window.addEventListener('pointercancel', releaseTouchAttack);
+    }
+
+    const bindCombatTouch = (el: HTMLElement | null, cb?: () => void) => {
+      if (!el) return;
+      el.addEventListener('pointerdown', (e: PointerEvent) => {
+        if (this.isCustomizingControls) return;
+        e.preventDefault();
+        e.stopPropagation();
+        cb?.();
+      });
+      el.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
     };
-    bindCombatTouch(this.touchAttackBtn, () => this.callbacks.onCombatAttack?.());
-    this.touchAttackBtn?.addEventListener('pointerdown', () => {
-      if (!this.isCustomizingControls) this.callbacks.onAttackHoldChange?.(true);
-    });
-    const releaseTouchAttack = () => {
-      this.callbacks.onAttackHoldChange?.(false);
-    };
-    this.touchAttackBtn?.addEventListener('pointerup', releaseTouchAttack);
-    this.touchAttackBtn?.addEventListener('pointercancel', releaseTouchAttack);
-    window.addEventListener('pointerup', releaseTouchAttack);
     bindCombatTouch(this.touchDodgeBtn, () => this.callbacks.onCombatDodge?.());
     bindCombatTouch(this.touchPulseBtn, () => this.callbacks.onCombatPulse?.());
 
@@ -5315,7 +5343,11 @@ export class GameUI {
     this.joystickTouchId = null;
     this.sprintTouchId = null;
     this.sprintPointerId = null;
+    this.attackPointerId = null;
+    this.aimPointerId = null;
     this.isSprintHeld = false;
+    this.touchAttackBtn?.classList.remove('active');
+    this.weaponAimBtn?.classList.remove('active');
     this.callbacks.onAttackHoldChange?.(false);
     this.callbacks.onSecondaryHoldChange?.(false);
     this.resetJoystick();

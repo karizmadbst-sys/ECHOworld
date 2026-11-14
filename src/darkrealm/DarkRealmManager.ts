@@ -46,6 +46,7 @@ export class DarkRealmManager {
   private minimapAccum = 0;
   private shieldActiveTimer = 0;
   private saveAccum = 0;
+  private lastWasSwimming = false;
 
   // Minecraft-style Build Rotation & Progressive Mining State
   public buildRotation = 0;
@@ -296,6 +297,7 @@ export class DarkRealmManager {
     this.player.velocity.set(0, 0, 0);
     this.player.isGrounded = true;
     this.player.isSwimming = false;
+    this.lastWasSwimming = false;
     this.player.isDead = false;
     this.player.isDodging = false;
     this.player.isAttacking = false;
@@ -333,6 +335,7 @@ export class DarkRealmManager {
     }
     this.player.customWaterY = null;
     this.player.externalSpeedMultiplier = 1.0;
+    this.lastWasSwimming = false;
     this.resetMiningState();
     this.player.setDarkRealmToolVisual(this.weaponSystem?.activeWeapon ?? 'sword', 0x00f5d4);
     this.entities.resetCompanionTransforms();
@@ -702,6 +705,8 @@ export class DarkRealmManager {
     this.player.position.set(DarkRealmTerrain.SPAWN_POS.x, ry, DarkRealmTerrain.SPAWN_POS.z);
     this.player.velocity.set(0, 0, 0);
     this.player.isGrounded = true;
+    this.player.isSwimming = false;
+    this.lastWasSwimming = false;
     this.entities.resetCompanionsNearPlayer(this.player.position);
     this.ui.showToast('✦ تمت استعادة الموقع · Position reset');
   }
@@ -982,6 +987,23 @@ export class DarkRealmManager {
       this.player.currentFacingAngle,
       this.player.isMoving
     );
+
+    if (this.player.isSwimming) {
+      if (!this.lastWasSwimming) {
+        this.sound.playWaterSplash(1.2);
+      }
+      if (this.player.isMoving || this.player.isRunningInPlace) {
+        this.sound.playSwimStroke(this.player.isSprinting);
+      }
+    } else {
+      if (this.lastWasSwimming) {
+        this.sound.playWaterSplash(0.7);
+      }
+      if ((this.player.isMoving || this.player.isRunningInPlace) && this.player.isGrounded) {
+        this.sound.playFootstep(this.player.isSprinting);
+      }
+    }
+    this.lastWasSwimming = this.player.isSwimming;
 
     // 5. Passive Mana Regen + Exploration Distance & Biome Tracking
     this.manaRegenAccum += dt;

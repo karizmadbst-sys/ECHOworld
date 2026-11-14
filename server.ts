@@ -8,6 +8,7 @@ import express from 'express';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -15,6 +16,75 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT || 3000);
 const DEFAULT_ROOM_ID = 'ECHO-PUBLIC-1';
+const SERVER_AUTH_SECRET =
+  process.env.AUTH_SECRET && process.env.AUTH_SECRET.trim().length >= 12
+    ? process.env.AUTH_SECRET.trim()
+    : 'echo-local-session-secret-change-in-prod';
+
+interface SessionTokenPayload {
+  pid: string;
+  iat: number;
+  exp: number;
+  nonce: string;
+}
+
+function issueLocalSessionToken(
+  playerId: string,
+  ttlMs: number = 7 * 24 * 60 * 60 * 1000
+): { token: string; expiresAt: number } {
+  const now = Date.now();
+  const expiresAt = now + ttlMs;
+  const payload: SessionTokenPayload = {
+    pid: playerId,
+    iat: now,
+    exp: expiresAt,
+    nonce: crypto.randomBytes(12).toString('base64url'),
+  };
+  const payloadEncoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const sigEncoded = crypto
+    .createHmac('sha256', SERVER_AUTH_SECRET)
+    .update(payloadEncoded)
+    .digest('base64url');
+  return {
+    token: `${payloadEncoded}.${sigEncoded}`,
+    expiresAt,
+  };
+}
+
+function verifyLocalSessionToken(token: string | null | undefined): SessionTokenPayload | null {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payloadEncoded, sigEncoded] = parts;
+  if (!payloadEncoded || !sigEncoded) return null;
+
+  const expectedSig = crypto
+    .createHmac('sha256', SERVER_AUTH_SECRET)
+    .update(payloadEncoded)
+    .digest();
+  let actualSig: Buffer;
+  try {
+    actualSig = Buffer.from(sigEncoded, 'base64url');
+  } catch {
+    return null;
+  }
+  if (expectedSig.length !== actualSig.length || !crypto.timingSafeEqual(expectedSig, actualSig)) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(
+      Buffer.from(payloadEncoded, 'base64url').toString('utf8')
+    ) as SessionTokenPayload;
+    if (!payload || typeof payload.pid !== 'string' || typeof payload.exp !== 'number') {
+      return null;
+    }
+    if (Date.now() > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
 
 type RealmId = 'ISLAND' | 'DARK_REALM';
 
@@ -277,6 +347,16 @@ class EchoMultiplayerServer {
       const profile = packet.profile as PlayerProfile;
       if (!profile || typeof profile.id !== 'string' || !profile.id.trim()) {
         this.sendToSocket(ws, { type: 'S_AUTH_ACK', success: false, sessionPlayerId: '', error: 'Missing player profile id' });
+        return;
+      }
+      const verified = verifyLocalSessionToken(packet.token);
+      if (!verified || verified.pid !== profile.id) {
+        this.sendToSocket(ws, {
+          type: 'S_AUTH_ACK',
+          success: false,
+          sessionPlayerId: '',
+          error: 'Invalid or expired session token. Authenticate via POST /api/auth/session first.',
+        });
         return;
       }
 
@@ -1348,11 +1428,12 @@ async function startServer(): Promise<void> {
       return;
     }
     const existing = localCloudSaves.get(playerId);
+    const { token, expiresAt } = issueLocalSessionToken(playerId);
     res.json({
       ok: true,
       playerId,
-      token: `local_${playerId}_${Date.now()}`,
-      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      token,
+      expiresAt,
       cloudUpdatedAt: existing?.updatedAt || 0,
     });
   });
@@ -1365,13 +1446,12 @@ async function startServer(): Promise<void> {
   app.get('/api/player/save', (req, res) => {
     const auth = String(req.headers.authorization || '');
     const token = auth.replace(/^Bearer\s+/i, '');
-    const match = token.match(/^local_(.+)_\d+$/);
-    const pid = match?.[1];
-    if (!pid) {
+    const verified = verifyLocalSessionToken(token);
+    if (!verified) {
       res.status(401).json({ ok: false, error: 'Unauthorized' });
       return;
     }
-    const entry = localCloudSaves.get(pid);
+    const entry = localCloudSaves.get(verified.pid);
     res.json({
       ok: true,
       save: entry?.save ?? null,
@@ -1383,14 +1463,13 @@ async function startServer(): Promise<void> {
   app.post('/api/player/save', (req, res) => {
     const auth = String(req.headers.authorization || '');
     const token = auth.replace(/^Bearer\s+/i, '');
-    const match = token.match(/^local_(.+)_\d+$/);
-    const pid = match?.[1];
-    if (!pid) {
+    const verified = verifyLocalSessionToken(token);
+    if (!verified) {
       res.status(401).json({ ok: false, error: 'Unauthorized' });
       return;
     }
     const updatedAt = Date.now();
-    localCloudSaves.set(pid, {
+    localCloudSaves.set(verified.pid, {
       save: req.body?.save ?? null,
       darkProgress: req.body?.darkProgress ?? null,
       updatedAt,
@@ -1405,7 +1484,17 @@ async function startServer(): Promise<void> {
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    try {
+      const url = new URL(req.url || '/ws', `http://localhost:${PORT}`);
+      const queryToken = url.searchParams.get('token');
+      if (queryToken && !verifyLocalSessionToken(queryToken)) {
+        ws.close(4001, 'Invalid session token');
+        return;
+      }
+    } catch {
+      // ignore malformed URL
+    }
     mpServer.handleConnection(ws);
   });
 

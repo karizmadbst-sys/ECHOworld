@@ -837,8 +837,15 @@ export class MultiplayerCoordinator implements VoiceSignalSender {
       case 'S_AUTH_ACK': {
         if (packet.success) {
           this.connectionStatus = 'ONLINE';
+          this.lastAuthError = null;
           this.voice.setLocalPlayerId(packet.sessionPlayerId);
           this.transport.flushPendingQueue?.();
+        } else {
+          this.lastAuthError = packet.error || 'WebSocket session authentication failed.';
+          this.authToken = null;
+          clearCachedAuthToken();
+          this.connectionStatus = 'OFFLINE';
+          this.transport.disconnect();
         }
         this.onStateUpdated?.();
         break;

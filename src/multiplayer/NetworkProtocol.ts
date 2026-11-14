@@ -46,14 +46,12 @@ export function normalizeServerUrls(rawInput: string): { wsUrl: string; apiUrl: 
 
   try {
     const u = new URL(normalized);
-    const isSecure = u.protocol === 'https:' || u.protocol === 'wss:';
+    const isLocalHost = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    const isSecure = u.protocol === 'https:' || u.protocol === 'wss:' || !isLocalHost;
     const wsProto = isSecure ? 'wss:' : 'ws:';
     const httpProto = isSecure ? 'https:' : 'http:';
     const basePath = u.pathname
-      .replace(/\/api\/auth\/session\/?$/i, '')
-      .replace(/\/api\/player\/save\/?$/i, '')
-      .replace(/\/api\/health\/?$/i, '')
-      .replace(/\/api\/rooms\/?$/i, '')
+      .replace(/\/api(?:\/.*)?$/i, '')
       .replace(/\/ws\/?$/i, '')
       .replace(/\/+$/, '');
     const wsUrl = `${wsProto}//${u.host}${basePath}/ws`;
@@ -325,12 +323,14 @@ export async function uploadCloudPlayerSave(
   save: unknown,
   darkProgress: unknown
 ): Promise<{ ok: boolean; updatedAt?: number }> {
-  if (!apiUrl || !token) return { ok: false };
+  const cleanApiUrl = normalizeServerUrls(apiUrl)?.apiUrl;
+  if (!cleanApiUrl || !token) return { ok: false };
   try {
-    const res = await fetch(`${apiUrl}/api/player/save`, {
+    const res = await fetch(`${cleanApiUrl}/api/player/save`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ save, darkProgress }),
@@ -347,11 +347,15 @@ export async function downloadCloudPlayerSave(
   apiUrl: string,
   token: string
 ): Promise<{ ok: boolean; save?: any; darkProgress?: any; updatedAt?: number }> {
-  if (!apiUrl || !token) return { ok: false };
+  const cleanApiUrl = normalizeServerUrls(apiUrl)?.apiUrl;
+  if (!cleanApiUrl || !token) return { ok: false };
   try {
-    const res = await fetch(`${apiUrl}/api/player/save`, {
+    const res = await fetch(`${cleanApiUrl}/api/player/save`, {
       method: 'GET',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
     });
     if (!res.ok) return { ok: false };
     const data = (await res.json()) as {
